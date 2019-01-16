@@ -1,0 +1,253 @@
+---
+title: "Stairteck Price Variation"
+author: "Jeevan Sai Reddy"
+date: "January 5, 2019"
+output:
+  html_document: default
+  word_document: default
+---
+
+# {.tabset .tabset-fade}
+
+## Introduction
+
+Stairtek is a US-based manufacturer and distributor of branded prefinished and unfinished hardwood and laminate stair parts, founded in 2004 to fill a niche need in the wood flooring industry: supplying prefinished wood treads and risers to match prefinished wood floors in color, gloss and durability. All products are manufactured in the USA. 
+
+Stairtek wants to understand reasons for variation in its spend. There could be multiple factors that can be impacting monthly spend on raw materials and Stairtek wants to be in a position to track the same. This could also help in planning their budgets for coming months
+
+### <span style="blue"> Approach to address problem </span>
+Above problem can be split in to two parts
+
+1. Part1: Understand reasons for price variation through Exploratory Data Analysis and Machine Learning models
+2. Part2: Build an automated dashboard which gives expected spend given input parameters
+
+##  Exploratory Data Analysis
+
+###  <span style="color:blue"> Data Preparation </span>
+
+```{r warning=FALSE, message=FALSE}
+
+# Set working directory
+setwd("C:\\Users\\jeeva\\Documents\\BANA\\Career Management\\Amend Usecase\\")
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(gridExtra)
+library(knitr)
+
+setwd("C:\\Users\\jeeva\\Documents\\BANA\\Career Management\\Amend Usecase\\")
+amend_data <- read.csv("Amend_use_case.csv", header = TRUE, stringsAsFactors = FALSE)
+
+amend_data$unit_price <- ifelse(amend_data$Last.Unit.Cost == 0, amend_data$Original.Unit.Cost, 
+                                amend_data$Last.Unit.Cost)
+amend_data$final_cost <- amend_data$Received.Quantity * amend_data$unit_price
+
+#hist(amend_data$final_cost)
+#summary(amend_data)
+amend_data$order_date2 <- as.Date(amend_data$Order.Date, format = "%m/%d/%Y")
+
+```
+
+
+### <span style="color:blue"> Exploratory Data Analysis </span>
+
+ **1. To understand variation in spend and quantity**
+
+Distribution of amount spent and quantity across time
+```{r message=FALSE, warning=FALSE}
+# Amount spent by month
+spend_plot <- amend_data %>% 
+  group_by(mon_yr = format(order_date2,"%Y-%m")) %>%
+  summarise(total_cost = sum(final_cost, na.rm = TRUE)) %>%
+  ggplot(aes(x = mon_yr, y = total_cost, group = 1)) +
+  geom_line() +
+  geom_point() + 
+  scale_y_continuous(name = "Total Spent", labels = scales::dollar) +
+  labs(x = "Month", title = "Amount spent by month")
+
+# Quantity by month
+quantity_plot <- amend_data %>% 
+  group_by(mon_yr = format(order_date2,"%Y-%m")) %>%
+  summarise(total_quan = sum(Received.Quantity, na.rm = TRUE)) %>%
+  ggplot(aes(x = mon_yr, y = total_quan, group = 1)) +
+  geom_line() +
+  geom_point() + 
+  scale_y_continuous(name = "Total Quantity", labels = scales::comma) +
+  labs(x = "Month", title = "Quantity by month")
+
+grid.arrange(spend_plot, quantity_plot, ncol = 1)
+
+```
+
+ **Insights** - Could see that amount spent and quantity have very high variability. Also, total amount spent and quantity doesn't seem to be exactly correlated with each other
+
+
+ **2. To understand split of amount spent by Item Code**
+
+Amount and Quantity across various Item Codes
+```{r message=FALSE, warning=FALSE}
+# To Understand quantity and amount spent by item code
+amend_data_item_code <- amend_data %>% 
+  group_by(Item.Code.Acronym) %>%
+  summarise(total_spent = sum(final_cost, na.rm = TRUE), 
+            total_quantity = sum(Received.Quantity, na.rm = TRUE)) %>%
+arrange(desc(total_spent))
+
+# Calculating spent percentage
+amend_data_item_code$spent_percent <- round((amend_data_item_code$total_spent / 
+                                         sum(amend_data_item_code$total_spent))*100,2)
+
+amend_data_item_code$quan_percent <- round((amend_data_item_code$total_quantity / 
+                                              sum(amend_data_item_code$total_quantity))*100,2)
+
+kable(amend_data_item_code, caption = "Summary of spent and quantity by item code")
+
+```
+
+ **Insights** - Could see that around 80% of spend is on top 3 products and these top 3 items correspond to approximately 20% of total quantity ordered
+
+ **3. To understand price per unit split by Item Code**
+
+Price Per Unit for top 3 items
+```{r message=FALSE, warning=FALSE}
+# Aggregating at Item code and month level
+amend_df_aggregated <- amend_data %>% 
+  group_by(mon_yr = format(order_date2,"%Y-%m"), item_code = Item.Code.Acronym) %>%
+  summarise(total_quan = sum(Received.Quantity, na.rm = TRUE), 
+            total_price = sum(final_cost, na.rm = TRUE)) %>%
+  mutate(price_per_unit = total_price / total_quan)
+
+# Filtering only top 3 item codes
+top3_item_codes <- amend_df_aggregated %>%
+  group_by(item_code) %>%
+  summarise(total_price = sum(total_price)) %>%
+  arrange(desc(total_price)) %>%
+  top_n(3) %>%
+  select(item_code)
+
+top3_item_codes <- as.vector(top3_item_codes$item_code)
+
+top3_unit_price_plot <- amend_df_aggregated %>%
+  filter(item_code %in% top3_item_codes) %>%
+  ggplot(aes(x = mon_yr, y = price_per_unit, colour = item_code, group = item_code)) +
+  geom_line() + 
+  geom_point() + 
+  scale_y_continuous(name = "Price Per Unit", labels = scales::dollar) +
+  labs(x = "Month", title = "Price Per Unit for top 3 item codes")
+
+top3_unit_price_plot
+```
+
+ **Insights** - Could see that price per unit has high variation for BOT and BOX. Variation is considerably less for RIS
+
+ **4.	To understand price variation at species level for each item codes**
+
+```{r message=FALSE, warning=FALSE}
+amend_data$month_yr <- format(amend_data$order_date2,"%Y-%m")
+# Finding unit price for BOT at species level
+top5_species_unit_price_bot <- amend_data %>%
+  filter(Item.Code.Acronym %in% c('BOT')) %>%
+  group_by(month_yr, Species, Item.Code.Acronym) %>%
+  summarise(tot_price = sum(final_cost, na.rm = TRUE), tot_quan = sum(Received.Quantity, na.rm = TRUE)) %>%
+  mutate(unit_price = tot_price / tot_quan)
+
+# Finding unit price for BOX at species level
+top5_species_unit_price_box <- amend_data %>%
+  filter(Item.Code.Acronym %in% c('BOX')) %>%
+  group_by(month_yr, Species, Item.Code.Acronym) %>%
+  summarise(tot_price = sum(final_cost, na.rm = TRUE), tot_quan = sum(Received.Quantity, na.rm = TRUE)) %>%
+  mutate(unit_price = tot_price / tot_quan)
+
+# Finding unit price for RIS at species level
+top5_species_unit_price_ris <- amend_data %>%
+  filter(Item.Code.Acronym %in% c('RIS')) %>%
+  group_by(month_yr, Species, Item.Code.Acronym) %>%
+  summarise(tot_price = sum(final_cost, na.rm = TRUE), tot_quan = sum(Received.Quantity, na.rm = TRUE)) %>%
+  mutate(unit_price = tot_price / tot_quan)
+
+# Filtering out NAs
+top5_species_unit_price_bot <- top5_species_unit_price_bot[complete.cases(top5_species_unit_price_bot),]
+top5_species_unit_price_box <- top5_species_unit_price_box[complete.cases(top5_species_unit_price_box),]
+top5_species_unit_price_ris <- top5_species_unit_price_ris[complete.cases(top5_species_unit_price_ris),]
+
+# Find coefficeint of variation at species level for BOT
+df_bot <- top5_species_unit_price_bot %>%
+  group_by(Species) %>%
+  summarise(coeff_var = sd(unit_price) / mean(unit_price))
+df_bot$item_code <- 'BOT'
+
+# Find coefficeint of variation at species level for BOX
+df_box <- top5_species_unit_price_box %>%
+  group_by(Species) %>%
+  summarise(coeff_var = sd(unit_price) / mean(unit_price))
+df_box$item_code <- 'BOX'
+
+# Find coefficeint of variation at species level for RIS
+df_ris <- top5_species_unit_price_ris %>%
+  group_by(Species) %>%
+  summarise(coeff_var = sd(unit_price) / mean(unit_price))
+df_ris$item_code <- 'RIS'
+
+# Combining in to one CV df
+cv_df_combined <- rbind(df_bot, df_box, df_ris)
+
+# Creating one data frame to calculate CV at Item Code level
+cv_df_all_species <- amend_data %>%
+  filter(Item.Code.Acronym %in% c('BOT', 'BOX', 'RIS')) %>%
+  group_by(month_yr, Item.Code.Acronym) %>%
+  summarise(tot_price = sum(final_cost, na.rm = TRUE), tot_quan = sum(Revised.Quantity, na.rm = TRUE))
+
+# Filtering out NA values  
+cv_df_all_species <- cv_df_all_species[which(cv_df_all_species$tot_price > 0 &
+                                               cv_df_all_species$tot_quan > 0),]
+
+# Calculating unit price
+cv_df_all_species$unit_price <- cv_df_all_species$tot_price / cv_df_all_species$tot_quan
+
+# 2018-11 has very low unit price. Need to understand data quality here
+cv_df_all_species <- cv_df_all_species[cv_df_all_species$month_yr != '2018-11', ]
+
+# Finding CV at item code level
+cv_df_all_species_v2 <- cv_df_all_species %>%
+  group_by(Item.Code.Acronym) %>%
+  summarise(cv_item = sd(unit_price) / mean(unit_price))
+
+# Filtering out NA values
+cv_df_combined <- cv_df_combined[complete.cases(cv_df_combined), ]
+
+colnames(cv_df_all_species_v2) <- c("item_code", "coeff_var_overall")
+
+# Obtaining one final data frame where we get CV at species and CV for Item code
+cv_df_combined_v2 <- merge(x = cv_df_combined, y = cv_df_all_species_v2, by = "item_code")
+
+# Splitting above data frame in to two
+# 1. where cv of species is greater than overall CV i.e. item code
+# 2. where cv of species is less than overall CV i.e. item code
+cv_df_species_greater <- cv_df_combined_v2 %>%
+  filter(coeff_var > coeff_var_overall)
+
+cv_df_species_lesser <- cv_df_combined_v2 %>%
+  filter(coeff_var <= coeff_var_overall)
+
+# Creating one data frame which is a combination of species with cv greater than 
+# overall and less than overall
+cv_summary_df <- merge(cv_df_species_greater %>%
+                       group_by(item_code) %>%
+                       summarise(num_species_greater = n_distinct(Species)),
+                       cv_df_species_lesser %>%
+                       group_by(item_code) %>%
+                       summarise(num_species_lesser = n_distinct(Species)),
+                       by = "item_code", all = TRUE)
+
+cv_summary_df[is.na(cv_summary_df)] <- 0
+
+cv_summary_df$greater_percent <- round((cv_summary_df$num_species_greater / (cv_summary_df$num_species_greater + cv_summary_df$num_species_lesser) )*100,2)
+
+kable(cv_summary_df, caption = "Summary of coefficient of variation")
+
+```
+
+This table shows number of species where coefficeint of variation at species level is greater than overall coefficient of variation (i.e. at Item code level)
+
+  **Insights:** Could see that for all species in BOX, variation in price is less than overall price. Hence variation here could be the way orders are being placed and has nothing to do with species
+For BOT around 52% species have variation greater than overall and for RIS around 41% have variation greater than overall
